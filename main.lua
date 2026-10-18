@@ -1,200 +1,274 @@
+-- =============================================================================
+-- PRO-LEVEL UTILITY SCRIPT v3 (Smoothness Slider & Raycast Wall-Check)
+-- =============================================================================
+
 -- DIENSTEN
 local Players = game:GetService("Players")
 local Workspace = game:GetService("Workspace")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 
--- VARIABELEN
+-- CONFIGURATIE & STATE
 local localPlayer = Players.LocalPlayer
 local camera = Workspace.CurrentCamera
+local mouse = localPlayer:GetMouse()
 
--- Vliegen variabelen
-local flying = false
-local flySpeed = 50
-local bodyGyro, bodyVelocity
-local keysDown = {}
+local state = {
+	fly = { active = false, speed = 50, keys = {} },
+	esp = { active = false, storage = {} },
+	aimlock = { active = false, targetPart = "Head", fov = 150, smoothness = 0.2 },
+	hitbox = { active = false, size = 15 }
+}
 
--- ESP variabelen
-local espActive = false
-local highlightStorage = {}
+local flyConstraints = {}
 
--- UI AANMAKEN
+-- =============================================================================
+-- UI CREATIE (Clean Dark Menu met Sliders)
+-- =============================================================================
 local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "UtilityGui"
+screenGui.Name = "CoreUtility_Menu_v3"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = localPlayer:WaitForChild("PlayerGui")
 
--- Knop om ESP aan/uit te zetten
-local espButton = Instance.new("TextButton")
-espButton.Size = UDim2.new(0, 150, 0, 40)
-espButton.Position = UDim2.new(0.02, 0, 0.78, 0)
-espButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-espButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-espButton.TextSize = 18
-espButton.Text = "ESP: OFF"
-espButton.Parent = screenGui
+local mainFrame = Instance.new("Frame")
+mainFrame.Size = UDim2.new(0, 260, 0, 420)
+mainFrame.Position = UDim2.new(0.05, 0, 0.25, 0)
+mainFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
+mainFrame.BorderSizePixel = 0
+mainFrame.Active = true
+mainFrame.Draggable = true
+mainFrame.Parent = screenGui
 
--- Knop/Indicator voor Vliegen
-local flyIndicator = Instance.new("TextLabel")
-flyIndicator.Size = UDim2.new(0, 150, 0, 40)
-flyIndicator.Position = UDim2.new(0.02, 0, 0.71, 0)
-flyIndicator.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-flyIndicator.TextColor3 = Color3.fromRGB(255, 255, 255)
-flyIndicator.TextSize = 14
-flyIndicator.Text = "Fly: OFF [Druk F]"
-flyIndicator.Parent = screenGui
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 8)
+mainCorner.Parent = mainFrame
 
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Size = UDim2.new(1, 0, 0, 40)
+titleLabel.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+titleLabel.Text = "  EXPERT PANEL v3"
+titleLabel.TextColor3 = Color3.fromRGB(230, 230, 230)
+titleLabel.Font = Enum.Font.GothamBold
+titleLabel.TextSize = 14
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.Parent = mainFrame
 
--- ==========================================
--- 1. VLIEGEN LOGICA (F-TOETS)
--- ==========================================
+local titleCorner = Instance.new("UICorner")
+titleCorner.CornerRadius = UDim.new(0, 8)
+titleCorner.Parent = titleLabel
 
-local function startFlying()
-	local character = localPlayer.Character
-	if not character then return end
-	local rootPart = character:FindFirstChild("HumanoidRootPart")
-	local humanoid = character:FindFirstChild("Humanoid")
-	if not rootPart or not humanoid then return end
+local function createMenuButton(text, position, callback)
+	local btn = Instance.new("TextButton")
+	btn.Size = UDim2.new(0, 220, 0, 35)
+	btn.Position = position
+	btn.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+	btn.TextColor3 = Color3.fromRGB(200, 200, 200)
+	btn.Font = Enum.Font.Gotham
+	btn.TextSize = 13
+	btn.Text = text
+	btn.Parent = mainFrame
 
-	flying = true
-	flyIndicator.Text = "Fly: ON [Druk F]"
-	flyIndicator.BackgroundColor3 = Color3.fromRGB(50, 150, 50)
-	
-	humanoid.PlatformStand = true -- Zorgt dat de speler niet valt of loopt
+	local btnCorner = Instance.new("UICorner")
+	btnCorner.CornerRadius = UDim.new(0, 6)
+	btnCorner.Parent = btn
 
-	-- Krachten aanmaken om in de lucht te zweven/bewegen
-	bodyGyro = Instance.new("BodyGyro")
-	bodyGyro.P = 9e4
-	bodyGyro.maxTorque = Vector3.new(9e9, 9e9, 9e9)
-	bodyGyro.cframe = rootPart.CFrame
-	bodyGyro.Parent = rootPart
-
-	bodyVelocity = Instance.new("BodyVelocity")
-	bodyVelocity.velocity = Vector3.new(0, 0.1, 0)
-	bodyVelocity.maxForce = Vector3.new(9e9, 9e9, 9e9)
-	bodyVelocity.Parent = rootPart
-
-	-- Loop om de beweging soepel te berekenen op basis van de camerarichting
-	task.spawn(function()
-		while flying and rootPart and humanoid do
-			local moveDirection = Vector3.new(0, 0, 0)
-			
-			if keysDown[Enum.KeyCode.W] then moveDirection = moveDirection + camera.CFrame.LookVector end
-			if keysDown[Enum.KeyCode.S] then moveDirection = moveDirection - camera.CFrame.LookVector end
-			if keysDown[Enum.KeyCode.A] then moveDirection = moveDirection - camera.CFrame.RightVector end
-			if keysDown[Enum.KeyCode.D] then moveDirection = moveDirection + camera.CFrame.RightVector end
-			if keysDown[Enum.KeyCode.Space] then moveDirection = moveDirection + Vector3.new(0, 1, 0) end
-			if keysDown[Enum.KeyCode.LeftShift] then moveDirection = moveDirection - Vector3.new(0, 1, 0) end
-
-			bodyVelocity.velocity = moveDirection.Magnitude > 0 and moveDirection.Unit * flySpeed or Vector3.new(0, 0, 0)
-			bodyGyro.cframe = camera.CFrame
-			RunService.RenderStepped:Wait()
-		end
+	btn.MouseButton1Click:Connect(function()
+		local newState = callback()
+		TweenService:Create(btn, TweenInfo.new(0.2), {
+			BackgroundColor3 = newState and Color3.fromRGB(0, 150, 100) or Color3.fromRGB(40, 40, 40),
+			TextColor3 = newState and Color3.fromRGB(255, 255, 255) or Color3.fromRGB(200, 200, 200)
+		}):Play()
 	end)
+	return btn
 end
 
-local function stopFlying()
-	flying = false
-	flyIndicator.Text = "Fly: OFF [Druk F]"
-	flyIndicator.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+-- =============================================================================
+-- INTERACTIEVE SLIDER (Smoothness regelaar)
+-- =============================================================================
+local sliderFrame = Instance.new("Frame")
+sliderFrame.Size = UDim2.new(0, 220, 0, 45)
+sliderFrame.Position = UDim2.new(0, 20, 0, 280)
+sliderFrame.BackgroundColor3 = Color3.fromRGB(32, 32, 32)
+sliderFrame.BorderSizePixel = 0
+sliderFrame.Parent = mainFrame
 
-	if bodyGyro then bodyGyro:Destroy() end
-	if bodyVelocity then bodyVelocity:Destroy() end
+local sliderCorner = Instance.new("UICorner")
+sliderCorner.CornerRadius = UDim.new(0, 6)
+sliderCorner.Parent = sliderFrame
 
-	local character = localPlayer.Character
-	if character then
-		local humanoid = character:FindFirstChild("Humanoid")
-		if humanoid then humanoid.PlatformStand = false end
-	end
-end
+local sliderLabel = Instance.new("TextLabel")
+sliderLabel.Size = UDim2.new(1, 0, 0, 20)
+sliderLabel.Position = UDim2.new(0, 10, 0, 2)
+sliderLabel.BackgroundTransparency = 1
+sliderLabel.Text = "Aim Smoothness: 0.20"
+sliderLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+sliderLabel.Font = Enum.Font.Gotham
+sliderLabel.TextSize = 11
+sliderLabel.TextXAlignment = Enum.TextXAlignment.Left
+sliderLabel.Parent = sliderFrame
 
--- Toetsenbord input registreren
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-	if gameProcessed then return end -- Negeer als je in de chat typt
+local sliderTrack = Instance.new("Frame")
+sliderTrack.Size = UDim2.new(0, 200, 0, 6)
+sliderTrack.Position = UDim2.new(0, 10, 0, 26)
+sliderTrack.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+sliderTrack.BorderSizePixel = 0
+sliderTrack.Parent = sliderFrame
 
-	if input.KeyCode == Enum.KeyCode.F then
-		if flying then stopFlying() else startFlying() end
-	end
+local sliderFill = Instance.new("Frame")
+sliderFill.Size = UDim2.new(state.aimlock.smoothness, 0, 1, 0) -- Standaard op 0.20 (20%)
+sliderFill.BackgroundColor3 = Color3.fromRGB(0, 150, 100)
+sliderFill.BorderSizePixel = 0
+sliderFill.Parent = sliderTrack
 
-	-- Houd bij welke bewegingstoetsen zijn ingedrukt
-	keysDown[input.KeyCode] = true
+local sliderBtn = Instance.new("TextButton")
+sliderBtn.Size = UDim2.new(0, 14, 0, 14)
+sliderBtn.Position = UDim2.new(state.aimlock.smoothness, -7, 0, -4)
+sliderBtn.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+sliderBtn.Text = ""
+sliderBtn.Parent = sliderTrack
+
+local btnRound = Instance.new("UICorner")
+btnRound.CornerRadius = UDim.new(1, 0)
+btnRound.Parent = sliderBtn
+
+-- Slider functionaliteit (Sleepbaar)
+local dragging = false
+sliderBtn.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = true end
 end)
-
 UserInputService.InputEnded:Connect(function(input)
-	keysDown[input.KeyCode] = nil
+	if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
 end)
 
-
--- ==========================================
--- 2. ESP LOGICA (HIGHLIGHTS DOOR MUREN)
--- ==========================================
-
-local function createESP(player)
-	if player == localPlayer then return end
-
-	local function applyHighlight(character)
-		if not espActive then return end
-		if highlightStorage[player] then highlightStorage[player]:Destroy() end
-
-		-- Maak een Highlight object aan (modern Roblox ESP systeem)
-		local highlight = Instance.new("Highlight")
-		highlight.Name = "ESPHighlight"
-		highlight.FillColor = Color3.fromRGB(255, 0, 0)     -- Kleur van de vulling (Rood)
-		highlight.FillTransparency = 0.5                     -- Doorschijnendheid van de vulling
-		highlight.OutlineColor = Color3.fromRGB(255, 255, 255) -- Kleur van de rand (Wit)
-		highlight.OutlineTransparency = 0                   -- Rand is volledig zichtbaar
-		highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop -- Zorgt dat het door muren heen te zien is
-		highlight.Parent = character
-
-		highlightStorage[player] = highlight
+UserInputService.InputChanged:Connect(function(input)
+	if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+		local trackX = sliderTrack.AbsolutePosition.X
+		local trackWidth = sliderTrack.AbsoluteSize.X
+		local mouseX = input.Position.X
+		local percentage = math.clamp((mouseX - trackX) / trackWidth, 0.01, 1) -- Nooit exact 0 ivm camera lerp delingen
+		
+		sliderBtn.Position = UDim2.new(percentage, -7, 0, -4)
+		sliderFill.Size = UDim2.new(percentage, 0, 1, 0)
+		
+		state.aimlock.smoothness = percentage
+		sliderLabel.Text = string.format("Aim Smoothness: %.2f", percentage)
 	end
+end)
 
-	-- Pas toe als de character laadt
-	if player.Character then applyHighlight(player.Character) end
-	player.CharacterAdded:Connect(applyHighlight)
+-- =============================================================================
+-- FOV CIRKEL
+-- =============================================================================
+local fovCircle = Drawing.new("Circle")
+fovCircle.Thickness = 1.5
+fovCircle.Color = Color3.fromRGB(0, 150, 100)
+fovCircle.Transparency = 0.7
+fovCircle.NumSides = 64
+fovCircle.Filled = false
+fovCircle.Visible = false
+
+RunService.RenderStepped:Connect(function()
+	if state.aimlock.active then
+		fovCircle.Position = UserInputService:GetMouseLocation()
+		fovCircle.Radius = state.aimlock.fov
+		fovCircle.Visible = true
+	else
+		fovCircle.Visible = false
+	end
+end)
+
+-- =============================================================================
+-- ADVANCED RAYCAST WALL-CHECK & AIMLOCK LOGICA
+-- =============================================================================
+local function isPartVisible(targetPart, character)
+	local origin = camera.CFrame.Position
+	local direction = targetPart.Position - origin
+	
+	local params = RaycastParams.new()
+	-- Sluit jezelf, de target en eventuele visuals/hitbox-expanders uit van de berekening
+	params.FilterDescendantsInstances = {localPlayer.Character, character, screenGui}
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.IgnoreWater = true
+	
+	local result = workspace:Raycast(origin, direction, params)
+	
+	-- Als het resultaat leeg is, raakt de straal niks tussen de camera en de target (dus zichtbaar!)
+	return result == nil
 end
 
-local function removeESP()
-	for player, highlight in pairs(highlightStorage) do
-		if highlight then highlight:Destroy() end
-	end
-	table.clear(highlightStorage)
-end
+local function getClosestPlayerToMouse()
+	local closest, shortestDistance = nil, state.aimlock.fov
+	local mousePos = UserInputService:GetMouseLocation()
 
-local function updateESP()
-	if espActive then
-		for _, player in ipairs(Players:GetPlayers()) do
-			createESP(player)
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= localPlayer and p.Character then
+			local part = p.Character:FindFirstChild(state.aimlock.targetPart)
+			local hum = p.Character:FindFirstChild("Humanoid")
+			
+			if part and hum and hum.Health > 0 then
+				local screenPos, onScreen = camera:WorldToViewportPoint(part.Position)
+				if onScreen then
+					local distance = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+					if distance < shortestDistance then
+						-- Voer hier de cruciale Wall-Check uit
+						if isPartVisible(part, p.Character) then
+							closest = part
+							shortestDistance = distance
+						end
+					end
+				end
+			end
 		end
-	else
-		removeESP()
 	end
+	return closest
 end
 
--- ESP Knop klikgedrag
-espButton.MouseButton1Click:Connect(function()
-	espActive = not espActive
-	if espActive then
-		espButton.Text = "ESP: ON"
-		espButton.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
-		updateESP()
-	else
-		espButton.Text = "ESP: OFF"
-		espButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-		updateESP()
+-- Vloeiende Camera Lock Loop (RenderStepped voor zero-lag framerate interpolatie)
+RunService.RenderStepped:Connect(function()
+	if state.aimlock.active then
+		local target = getClosestPlayerToMouse()
+		if target then
+			-- Bereken de doel CFrame richting de speler
+			local targetCFrame = CFrame.new(camera.CFrame.Position, target.Position)
+			-- Gebruik Lerp op basis van de sliderwaarde voor extreme smoothness
+			camera.CFrame = camera.CFrame:Lerp(targetCFrame, state.aimlock.smoothness)
+		end
 	end
 end)
 
--- Luister naar nieuwe spelers die de server betreden voor ESP
-Players.PlayerAdded:Connect(function(player)
-	if espActive then
-		createESP(player)
+-- =============================================================================
+-- MODERN FLY MODULE (LinearVelocity & AlignOrientation)
+-- =============================================================================
+local function toggleFly()
+	state.fly.active = not state.fly.active
+	local char = localPlayer.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	local hum = char and char:FindFirstChild("Humanoid")
+	
+	if not state.fly.active or not root or not hum then
+		for _, obj in ipairs(flyConstraints) do if obj then obj:Destroy() end end
+		table.clear(flyConstraints)
+		if hum then hum.PlatformStand = false end
+		return false
 	end
-end)
 
-Players.PlayerRemoving:Connect(function(player)
-	if highlightStorage[player] then
-		highlightStorage[player]:Destroy()
-		highlightStorage[player] = nil
-	end
-end)
+	hum.PlatformStand = true
+
+	local attachment = Instance.new("Attachment", root)
+	local linVel = Instance.new("LinearVelocity", root)
+	linVel.MaxForce = 9e9
+	linVel.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+	linVel.Attachment0 = attachment
+
+	local alignOri = Instance.new("AlignOrientation", root)
+	alignOri.MaxTorque = 9e9
+	alignOri.Responsiveness = 200
+	alignOri.Mode = Enum.OrientationMode.OneAttachment
+	alignOri.Attachment0 = attachment
+	alignOri.CFrame = root.CFrame
+
+	table.insert(flyConstraints, attachment)
+	table.insert(flyConstraints, linVel)
+	table.insert(flyConstraints, alignOri)
+
+	task.spawn(function()
